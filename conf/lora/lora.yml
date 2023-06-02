@@ -16,3 +16,22 @@ epoch_length: 100
 save_audio_epochs: 4
 
 AdamW.lr: 0.0001
+
+# Transforms
+build_transform.preprocess:
+  - VolumeNorm
+  - RescaleAudio
+build_transform.augment_prob: 0.0
+build_transform.augment:
+  - LowPass
+  - HighPass
+build_transform.postprocess:
+  - Identity
+
+VolumeNorm.db: [const, -24.0]
+
+LowPass.cutoff: [choice, [2000, 4000, 8000, 16000]]
+LowPass.prob: 0.1
+
+HighPass.cutoff: [choice, [50, 100, 250]]
+HighPass.prob: 0.1

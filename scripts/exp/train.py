@@ -58,24 +58,34 @@ AudioDataset = argbind.bind(at.datasets.AudioDataset, "train", "val")
 IGNORE_INDEX = -100
 
 
-@argbind.bind("train", "val", without_prefix=True)
-def build_transform():
-    transform = transforms.Compose(
-        tfm.VolumeNorm(("const", -24)),
-        # tfm.PitchShift(),
-        tfm.RescaleAudio(),
-    )
+
+@argbind.bind("train", "val")
+def build_transform(
+    augment_prob: float = 1.0,
+    preprocess: list = ["VolumeNorm", "RescaleAudio"],
+    augment: list = ["Identity"],
+    postprocess: list = ["Identity"],
+):
+    to_tfm = lambda l: [getattr(tfm, x)() for x in l]
+    preprocess = transforms.Compose(*to_tfm(preprocess), name="preprocess")
+    augment = transforms.Compose(*to_tfm(augment), name="augment", prob=augment_prob)
+    postprocess = transforms.Compose(*to_tfm(postprocess), name="postprocess")
+    transform = transforms.Compose(preprocess, augment, postprocess)
     return transform
 
 
 @torch.no_grad()
 def apply_transform(transform_fn, batch):
-    sig: AudioSignal = batch["signal"]
+    clean: AudioSignal = batch["signal"]
+    noisy: AudioSignal = batch["signal"].clone()
+
     kwargs = batch["transform_args"]
 
-    sig: AudioSignal = transform_fn(sig.clone(), **kwargs)
-    return sig
-
+    noisy = transform_fn(noisy, **kwargs)
+    with transform_fn.filter("preprocess", "postprocess"):
+        clean = transform_fn(clean.clone(), **kwargs)
+        
+    return clean, noisy
 
 def build_datasets(args, sample_rate: int):
     with argbind.scope(args, "train"):
@@ -312,22 +322,22 @@ def train(
         def train_loop(self, engine, batch):
             model.train()
             batch = at.util.prepare_batch(batch, accel.device)
-            signal = apply_transform(train_data.transform, batch)
+            sigin, sigout = apply_transform(train_data.transform, batch)
 
             output = {}
             vn = accel.unwrap(model)
             with accel.autocast():
                 with torch.inference_mode():
                     codec.to(accel.device)
-                    z = codec.encode(signal.samples, signal.sample_rate)["codes"]
-                    z = z[:, : vn.n_codebooks, :]
+                    zin = codec.encode(sigin.samples, sigin.sample_rate)["codes"]
+                    zin = zin[:, : vn.n_codebooks, :]
 
-                n_batch = z.shape[0]
+                n_batch = zin.shape[0]
                 r = rng.draw(n_batch)[:, 0].to(accel.device)
 
-                mask = pmask.random(z, r)
+                mask = pmask.random(zin, r)
                 mask = pmask.codebook_unmask(mask, vn.n_conditioning_codebooks)
-                z_mask, mask = pmask.apply_mask(z, mask, vn.mask_token)
+                z_mask, mask = pmask.apply_mask(zin, mask, vn.mask_token)
                 
                 z_mask_latent = vn.embedding.from_codes(z_mask, codec)
 
@@ -335,10 +345,15 @@ def train(
                 with accel.autocast(dtype=dtype):
                     z_hat = model(z_mask_latent, r)
                     # for mask mode
-                    z_hat = vn.add_truth_to_logits(z, z_hat, mask)
+                    z_hat = vn.add_truth_to_logits(zin, z_hat, mask)
+
+                with torch.inference_mode():
+                    zout = codec.encode(sigout.samples, sigout.sample_rate)["codes"]
+                    zout = zout[:, : vn.n_codebooks, :]
+                    zout = zout.to(accel.device)
 
                 target = codebook_flatten(
-                    z[:, vn.n_conditioning_codebooks :, :],
+                    zout[:, vn.n_conditioning_codebooks :, :],
                 )
 
                 flat_mask = codebook_flatten(
@@ -365,7 +380,7 @@ def train(
             accel.backward(output["loss"] / grad_acc_steps)
 
             output["other/learning_rate"] = optimizer.param_groups[0]["lr"]
-            output["other/batch_size"] = z.shape[0]
+            output["other/batch_size"] = zin.shape[0]
 
             if (
                 (engine.state.iteration % grad_acc_steps == 0)
@@ -393,27 +408,32 @@ def train(
             model.eval()
             codec.eval()
             batch = at.util.prepare_batch(batch, accel.device)
-            signal = apply_transform(val_data.transform, batch)
+            sigin, sigout = apply_transform(val_data.transform, batch)
 
             vn = accel.unwrap(model)
-            z = codec.encode(signal.samples, signal.sample_rate)["codes"]
-            z = z[:, : vn.n_codebooks, :]
+            #input sig
+            zin = codec.encode(sigin.samples, sigin.sample_rate)["codes"]
+            zin = zin[:, : vn.n_codebooks, :]
+            #output sig
+            zout = codec.encode(sigout.samples, sigout.sample_rate)["codes"]
+            zout = zout[:, : vn.n_codebooks, :]
 
-            n_batch = z.shape[0]
+            n_batch = zin.shape[0]
             r = rng.draw(n_batch)[:, 0].to(accel.device)
 
-            mask = pmask.random(z, r)
+            mask = pmask.random(zin, r)
             mask = pmask.codebook_unmask(mask, vn.n_conditioning_codebooks)
-            z_mask, mask = pmask.apply_mask(z, mask, vn.mask_token)
+            z_mask, mask = pmask.apply_mask(zin, mask, vn.mask_token)
 
             z_mask_latent = vn.embedding.from_codes(z_mask, codec)
 
             z_hat = model(z_mask_latent, r)
             # for mask mode
-            z_hat = vn.add_truth_to_logits(z, z_hat, mask)
+            z_hat = vn.add_truth_to_logits(zin, z_hat, mask)
+
 
             target = codebook_flatten(
-                z[:, vn.n_conditioning_codebooks :, :],
+                zout[:, vn.n_conditioning_codebooks :, :],
             )
 
             flat_mask = codebook_flatten(
@@ -570,35 +590,36 @@ def train(
             batch = [val_data[i] for i in val_idx]
             batch = at.util.prepare_batch(val_data.collate(batch), accel.device)
 
-            signal = apply_transform(val_data.transform, batch)
+            sigin, sigout = apply_transform(val_data.transform, batch)
 
-            z = codec.encode(signal.samples, signal.sample_rate)["codes"]
-            z = z[:, : vn.n_codebooks, :]
+            zin = codec.encode(sigin.samples, sigin.sample_rate)["codes"]
+            zin = zin[:, : vn.n_codebooks, :]
 
             r = torch.linspace(0.1, 0.95, len(val_idx)).to(accel.device)
 
 
-            mask = pmask.random(z, r)
+            mask = pmask.random(zin, r)
             mask = pmask.codebook_unmask(mask, vn.n_conditioning_codebooks)
-            z_mask, mask = pmask.apply_mask(z, mask, vn.mask_token)
+            z_mask, mask = pmask.apply_mask(zin, mask, vn.mask_token)
 
             z_mask_latent = vn.embedding.from_codes(z_mask, codec)
 
             z_hat = model(z_mask_latent, r)
             # for mask mode
-            z_hat = vn.add_truth_to_logits(z, z_hat, mask)
+            z_hat = vn.add_truth_to_logits(zin, z_hat, mask)
 
             z_pred = torch.softmax(z_hat, dim=1).argmax(dim=1)
             z_pred = codebook_unflatten(z_pred, n_c=vn.n_predict_codebooks)
-            z_pred = torch.cat([z[:, : vn.n_conditioning_codebooks, :], z_pred], dim=1)
+            z_pred = torch.cat([zin[:, : vn.n_conditioning_codebooks, :], z_pred], dim=1)
 
             generated = vn.to_signal(z_pred, codec)
-            reconstructed = vn.to_signal(z, codec)
+            reconstructed = vn.to_signal(zin, codec)
             masked = vn.to_signal(z_mask.squeeze(1), codec)
 
             for i in range(generated.batch_size):
                 audio_dict = {
-                    "original": signal[i],
+                    "input": sigin[i],
+                    "target": sigout[i],
                     "masked": masked[i],
                     "generated": generated[i],
                     "reconstructed": reconstructed[i],
@@ -611,8 +632,8 @@ def train(
                         plot_fn=None,
                     )
 
-            self.save_sampled(z)
-            self.save_imputation(z)
+            self.save_sampled(zin)
+            self.save_imputation(zin)
 
     trainer = Trainer(writer=writer, quiet=quiet)
 
