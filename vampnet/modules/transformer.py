@@ -17,6 +17,7 @@ from .layers import SequentialWithFiLM
 from .layers import WNConv1d
 from ..util import scalar_to_batch_tensor, codebook_flatten, codebook_unflatten
 from ..mask import _gamma
+from .condition import ChromaStemConditioner
 
 LORA_R = 8
 
@@ -260,12 +261,10 @@ class TransformerLayer(nn.Module):
     def __init__(
         self,
         d_model: int = 512,
-        d_cond: int = 64,
         n_heads: int = 8,
         bidirectional: bool = True,
         is_decoder: bool = False,
         has_relative_attention_bias: bool = False,
-        flash_attn: bool = False,
         dropout: float = 0.1,
     ):
         super().__init__()
@@ -274,26 +273,13 @@ class TransformerLayer(nn.Module):
 
         # Create self-attention layer
         self.norm_1 = RMSNorm(d_model)
-        self.film_1 = FiLM(d_cond, d_model)
-        self.flash_attn = flash_attn
-
-        if flash_attn:
-            from flash_attn.flash_attention import FlashMHA
-            self.self_attn = FlashMHA(
-                embed_dim=d_model,
-                num_heads=n_heads,
-                attention_dropout=dropout,
-                causal=False,
-            )
-        else:
-            self.self_attn = MultiHeadRelativeAttention(
-                n_heads, d_model, dropout, bidirectional, has_relative_attention_bias
-            )
+        self.self_attn = MultiHeadRelativeAttention(
+            n_heads, d_model, dropout, bidirectional, has_relative_attention_bias
+        )
 
         # (Optional) Create cross-attention layer
         if is_decoder:
             self.norm_2 = RMSNorm(d_model)
-            self.film_2 = FiLM(d_cond, d_model)
             self.cross_attn = MultiHeadRelativeAttention(
                 n_heads,
                 d_model,
@@ -304,7 +290,6 @@ class TransformerLayer(nn.Module):
 
         # Create last feed-forward layer
         self.norm_3 = RMSNorm(d_model)
-        self.film_3 = FiLM(d_cond, d_model)
         self.feed_forward = FeedForward(d_model=d_model, dropout=dropout)
 
         # Create dropout
@@ -314,7 +299,6 @@ class TransformerLayer(nn.Module):
         self,
         x,
         x_mask,
-        cond,
         src=None,
         src_mask=None,
         position_bias=None,
@@ -337,31 +321,18 @@ class TransformerLayer(nn.Module):
         Tensor[B x T_q x D]
         """
         y = self.norm_1(x)
-        y = self.film_1(y.permute(0, 2, 1), cond).permute(0, 2, 1)
-        if self.flash_attn:
-            with torch.autocast(y.device.type, dtype=torch.bfloat16):
-                y = self.self_attn(y)[0]
-        else:
-            y, position_bias = self.self_attn(y, y, y, x_mask, position_bias)
+    
+        y, position_bias = self.self_attn(y, y, y, x_mask, position_bias)
         x = x + self.dropout(y)
 
         if self.is_decoder:
             y = self.norm_2(x)
-            y = self.film_2(y.permute(0, 2, 1), cond).permute(0, 2, 1)
             y, encoder_decoder_position_bias = self.cross_attn(
                 y, src, src, src_mask, encoder_decoder_position_bias
             )
             x = x + self.dropout(y)
 
         y = self.norm_3(x)
-        y = self.film_3(
-            y.permute(
-                0,
-                2,
-                1,
-            ),
-            cond,
-        ).permute(0, 2, 1)
         y = self.feed_forward(y)
         x = x + self.dropout(y)
 
@@ -372,12 +343,10 @@ class TransformerStack(nn.Module):
     def __init__(
         self,
         d_model: int = 512,
-        d_cond: int = 64,
         n_heads: int = 8,
         n_layers: int = 8,
         last_layer: bool = True,
         bidirectional: bool = True,
-        flash_attn: bool = False,
         is_decoder: bool = False,
         dropout: float = 0.1,
     ):
@@ -392,12 +361,10 @@ class TransformerStack(nn.Module):
             [
                 TransformerLayer(
                     d_model,
-                    d_cond,
                     n_heads,
                     bidirectional,
                     is_decoder,
                     has_relative_attention_bias=True if (i == 0) else False,
-                    flash_attn=flash_attn,
                     dropout=dropout,
                 )
                 for i in range(n_layers)
@@ -410,7 +377,7 @@ class TransformerStack(nn.Module):
     def subsequent_mask(self, size):
         return torch.ones(1, size, size).tril().bool()
 
-    def forward(self, x, x_mask, cond=None, src=None, src_mask=None):
+    def forward(self, x, x_mask,  src=None, src_mask=None):
         """Computes a full transformer stack
         Parameters
         ----------
@@ -441,7 +408,6 @@ class TransformerStack(nn.Module):
             x, position_bias, encoder_decoder_position_bias = layer(
                 x=x,
                 x_mask=x_mask,
-                cond=cond,
                 src=src,
                 src_mask=src_mask,
                 position_bias=position_bias,
@@ -456,29 +422,24 @@ class VampNet(at.ml.BaseModel):
         self,
         n_heads: int = 20,
         n_layers: int = 16,
-        r_cond_dim: int = 64,
         n_codebooks: int = 9,
         n_conditioning_codebooks: int = 0,
         latent_dim: int = 8,
         embedding_dim: int = 1280,
         vocab_size: int = 1024,
-        flash_attn: bool = True,
-        noise_mode: str = "mask",
-        dropout: float = 0.1
+        dropout: float = 0.1,         
+        chroma_dim: int = 0,
     ):
         super().__init__()
         self.n_heads = n_heads
         self.n_layers = n_layers
-        self.r_cond_dim = r_cond_dim
         self.n_codebooks = n_codebooks
         self.n_conditioning_codebooks = n_conditioning_codebooks
         self.embedding_dim = embedding_dim
         self.vocab_size = vocab_size
         self.latent_dim = latent_dim
-        self.flash_attn = flash_attn
-        self.noise_mode = noise_mode
 
-        assert self.noise_mode == "mask", "deprecated"
+        self.chroma_dim = chroma_dim
 
         self.embedding = CodebookEmbedding(
             latent_dim=latent_dim,
@@ -491,19 +452,17 @@ class VampNet(at.ml.BaseModel):
 
         self.transformer = TransformerStack(
             d_model=embedding_dim,
-            d_cond=r_cond_dim,
             n_heads=n_heads,
             n_layers=n_layers,
             last_layer=True,
             bidirectional=True,
-            flash_attn=flash_attn,
             is_decoder=False,
             dropout=dropout,
         )
 
         # Add final conv layer
         self.n_predict_codebooks = n_codebooks - n_conditioning_codebooks
-        self.classifier = SequentialWithFiLM(
+        self.classifier = nn.Sequential(
             WNConv1d(
                 embedding_dim,
                 vocab_size * self.n_predict_codebooks,
@@ -513,42 +472,34 @@ class VampNet(at.ml.BaseModel):
             ),
         )
 
-    def forward(self, x, cond):
+        if self.chroma_dim > 0:
+            self.chroma_embedding = nn.Embedding(self.chroma_dim, self.embedding_dim)
+
+    def forward(self, x, chroma=None, chroma_dropout: float = 0.2):
         x = self.embedding(x)
         x_mask = torch.ones_like(x, dtype=torch.bool)[:, :1, :].squeeze(1)
 
-        cond = self.r_embed(cond)
+        if self.chroma_dim > 0:
+            assert chroma is not None
+            chroma = self.chroma_embedding(chroma)
+
+            # apply a chroma mask on the batch dimension
+            chroma_mask = torch.rand(chroma.shape[0]) > chroma_dropout
+            chroma_mask = chroma_mask.unsqueeze(-1).unsqueeze(-1).to(chroma.device)
+            chroma = chroma * chroma_mask
+
+            x = x + chroma
 
         x = rearrange(x, "b d n -> b n d")
-        out = self.transformer(x=x, x_mask=x_mask, cond=cond)
+        out = self.transformer(x=x, x_mask=x_mask)
         out = rearrange(out, "b n d -> b d n")
 
-        out = self.classifier(out, cond)
+        out = self.classifier(out)
 
         out = rearrange(out, "b (p c) t -> b p (t c)", c=self.n_predict_codebooks)
 
         return out
-    
-    def r_embed(self, r, max_positions=10000):
-        if self.r_cond_dim > 0:
-            dtype = r.dtype
 
-            r = _gamma(r) * max_positions
-            half_dim = self.r_cond_dim // 2
-
-            emb = math.log(max_positions) / (half_dim - 1)
-            emb = torch.arange(half_dim, device=r.device).float().mul(-emb).exp()
-
-            emb = r[:, None] * emb[None, :]
-            emb = torch.cat([emb.sin(), emb.cos()], dim=1)
-
-            if self.r_cond_dim % 2 == 1:  # zero pad
-                emb = nn.functional.pad(emb, (0, 1), mode="constant")
-
-            return emb.to(dtype)
-        else:
-            return r
-    
     @torch.no_grad()
     def to_signal(self, z, codec):
         """
@@ -571,7 +522,6 @@ class VampNet(at.ml.BaseModel):
                 signal.samples[:, :, sample_idx_0:sample_idx_1] = 0.0
 
         return signal
-
 
     @torch.no_grad()
     def generate(
@@ -798,6 +748,7 @@ def mask_by_random_topk(num_to_mask: int, probs: torch.Tensor, temperature: floa
     logging.debug(f"mask shape: {mask.shape}")
 
     return mask
+
 
 def typical_filter(
         logits, 

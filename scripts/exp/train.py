@@ -230,6 +230,7 @@ def train(
     grad_clip_val: float = 5.0,
     fine_tune: bool = False, 
     quiet: bool = False,
+    chroma_dropout: float = 0.2,
 ):
     assert codec_ckpt is not None, "codec_ckpt is required"
 
@@ -279,6 +280,20 @@ def train(
 
     criterion = CrossEntropyLoss()
 
+    # chroma conditioning   
+    vn = accel.unwrap(model)
+    if vn.chroma_dim > 0:
+        from vampnet.modules.condition import ChromaStemConditioner
+        chroma_conditioner = ChromaStemConditioner(
+            1, # unused. we have our own embedding layer 
+            codec.sample_rate, 
+            n_chroma=vn.chroma_dim,
+            duration=train_data.duration,
+            winhop=codec.hop_length, 
+            device=accel.device,
+        )
+            
+
     if fine_tune:
         import loralib as lora
         lora.mark_only_lora_as_trainable(model)
@@ -318,6 +333,16 @@ def train(
                         top_k=topk,
                     )
 
+
+        def _compute_chroma(self, signal, z, vn):
+            if vn.chroma_dim > 0:
+                chroma = chroma_conditioner._get_wav_embedding(signal.samples)
+                assert chroma.shape[1] == z.shape[-1]
+                chroma = rearrange(chroma, "b t c -> b c t")
+            else:   
+                chroma = None
+            return chroma
+    
         def train_loop(self, engine, batch):
             model.train()
             batch = at.util.prepare_batch(batch, accel.device)
@@ -331,8 +356,10 @@ def train(
                     z = codec.encode(signal.samples, signal.sample_rate)["codes"]
                     z = z[:, : vn.n_codebooks, :]
 
-                n_batch = z.shape[0]
-                r = rng.draw(n_batch)[:, 0].to(accel.device)
+                    n_batch = z.shape[0]
+                    r = rng.draw(n_batch)[:, 0].to(accel.device)
+
+                    chroma = self._compute_chroma(signal, z, vn)
 
                 mask = pmask.random(z, r)
                 mask = pmask.codebook_unmask(mask, vn.n_conditioning_codebooks)
@@ -342,7 +369,13 @@ def train(
 
                 dtype = torch.bfloat16 if accel.amp else None
                 with accel.autocast(dtype=dtype):
-                    z_hat = model(z_mask_latent, r)
+                    z_hat = model(
+                        z_mask_latent, 
+                        chroma=chroma, 
+                        chroma_dropout=chroma_dropout,
+                    )
+                    # for mask mode
+                    z_hat = vn.add_truth_to_logits(z, z_hat, mask)
 
                 target = codebook_flatten(
                     z[:, vn.n_conditioning_codebooks :, :],
@@ -412,7 +445,15 @@ def train(
 
             z_mask_latent = vn.embedding.from_codes(z_mask, codec)
 
-            z_hat = model(z_mask_latent, r)
+            chroma = self._compute_chroma(signal, z, vn)
+
+            z_hat = model(
+                z_mask_latent, 
+                chroma=chroma, 
+                chroma_dropout=chroma_dropout
+            )
+            # for mask mode
+            z_hat = vn.add_truth_to_logits(z, z_hat, mask)
 
             target = codebook_flatten(
                 z[:, vn.n_conditioning_codebooks :, :],
@@ -484,6 +525,7 @@ def train(
                     f"{save_path}/{tag}", model_extra,
                 )
 
+
         def save_sampled(self, z):
             num_samples = z.shape[0]
 
@@ -501,51 +543,6 @@ def train(
                 )
 
 
-        def save_imputation(self, z: torch.Tensor):
-            n_prefix = int(z.shape[-1] * 0.25)
-            n_suffix = int(z.shape[-1] *  0.25)
-
-            vn = accel.unwrap(model)
-
-            mask = pmask.inpaint(z, n_prefix, n_suffix)
-            mask = pmask.codebook_unmask(mask, vn.n_conditioning_codebooks)
-            z_mask, mask = pmask.apply_mask(z, mask, vn.mask_token)
-
-            imputed_noisy = vn.to_signal(z_mask, codec)
-            imputed_true = vn.to_signal(z, codec)
-
-            imputed = []
-            for i in range(len(z)):
-                imputed.append(
-                    vn.generate(
-                        codec=codec,
-                        time_steps=z.shape[-1],
-                        start_tokens=z[i][None, ...],
-                        mask=mask[i][None, ...],
-                    )   
-                )   
-            imputed = AudioSignal.batch(imputed)
-
-            for i in range(len(val_idx)):
-                imputed_noisy[i].cpu().write_audio_to_tb(
-                    f"imputed_noisy/{i}",
-                    self.writer,
-                    step=self.state.epoch,
-                    plot_fn=None,
-                )
-                imputed[i].cpu().write_audio_to_tb(
-                    f"imputed/{i}",
-                    self.writer,
-                    step=self.state.epoch,
-                    plot_fn=None,
-                )
-                imputed_true[i].cpu().write_audio_to_tb(
-                    f"imputed_true/{i}",
-                    self.writer,
-                    step=self.state.epoch,
-                    plot_fn=None,
-                )
-
         @torch.no_grad()
         def save_samples(self):
             model.eval()
@@ -562,14 +559,18 @@ def train(
 
             r = torch.linspace(0.1, 0.95, len(val_idx)).to(accel.device)
 
-
             mask = pmask.random(z, r)
             mask = pmask.codebook_unmask(mask, vn.n_conditioning_codebooks)
             z_mask, mask = pmask.apply_mask(z, mask, vn.mask_token)
 
             z_mask_latent = vn.embedding.from_codes(z_mask, codec)
 
-            z_hat = model(z_mask_latent, r)
+            z_hat = model(
+                z_mask_latent, 
+                chroma=self._compute_chroma(signal, z, vn), 
+            )
+            # for mask mode
+            z_hat = vn.add_truth_to_logits(z, z_hat, mask)
 
             z_pred = torch.softmax(z_hat, dim=1).argmax(dim=1)
             z_pred = codebook_unflatten(z_pred, n_c=vn.n_predict_codebooks)
