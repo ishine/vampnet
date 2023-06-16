@@ -131,7 +131,6 @@ def _vamp(data, return_mask=False):
     out_dir.mkdir()
     sig = at.AudioSignal(data[input_audio])
     #pitch shift input
-    sig = sig.shift_pitch(data[input_pitch_shift])
 
     # TODO: random pitch shift of segments in the signal to prompt! window size should be a parameter, pitch shift width should be a parameter
 
@@ -284,13 +283,6 @@ with gr.Blocks() as demo:
         # mask settings
         with gr.Column():
 
-            input_pitch_shift = gr.Slider(
-                label="input pitch shift (semitones)",
-                minimum=-36,
-                maximum=36,
-                step=1,
-                value=0,
-            )
 
             rand_mask_intensity = gr.Slider(
                 label="random mask intensity. (If this is less than 1, scatters prompts throughout the audio, should be between 0.9 and 1.0)",
@@ -436,7 +428,6 @@ with gr.Blocks() as demo:
             use_coarse2fine, 
             stretch_factor, 
             onset_mask_width, 
-            input_pitch_shift, 
             typical_filtering,
             typical_mass,
             typical_min_tokens,

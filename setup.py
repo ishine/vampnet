@@ -32,8 +32,11 @@ setup(
         "rich",
         "audiotools @ git+https://github.com/hugofloresgarcia/audiotools.git",
         "lac @ git+https://github.com/hugofloresgarcia/lac.git",
+        "loralib", 
+        "audiotools", 
+        "dac @ git+https://github.com/descriptinc/descript-audio-codec.git"
         # "wavebeat @ git+https://github.com/hugofloresgarcia/wavebeat.git",
-        "torch==2.0",
+        # "torch==2.0",
         "tqdm",
         "tensorboard",
         "google-cloud-logging==2.2.0",
