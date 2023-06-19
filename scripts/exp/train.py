@@ -20,13 +20,35 @@ import vampnet
 from vampnet.modules.transformer import VampNet
 from vampnet.util import codebook_unflatten, codebook_flatten
 from vampnet import mask as pmask
-from lac.model.lac import LAC
+
+from dac.model.dac import DAC
+import dac
+from dac.utils import load_model as load_dac
 
 
 # Enable cudnn autotuner to speed up training
 # (can be altered by the funcs.seed function)
 torch.backends.cudnn.benchmark = bool(int(os.getenv("CUDNN_BENCHMARK", 1)))
 # Uncomment to trade memory for speed.
+
+
+class Profiler:
+
+    def __init__(self):
+        self.ticks = [[time.time(), None]]
+
+    def tick(self, msg):
+        self.ticks.append([time.time(), msg])
+
+    def __repr__(self):
+        rep = 80 * "=" + "\n"
+        for i in range(1, len(self.ticks)):
+            msg = self.ticks[i][1]
+            ellapsed = self.ticks[i][0] - self.ticks[i - 1][0]
+            rep += msg + f": {ellapsed*1000:.2f}ms\n"
+        rep += 80 * "=" + "\n\n\n"
+        return rep
+
 
 # Install to make things look nice
 warnings.filterwarnings("ignore", category=UserWarning)
@@ -61,7 +83,7 @@ IGNORE_INDEX = -100
 @argbind.bind("train", "val", without_prefix=True)
 def build_transform():
     transform = transforms.Compose(
-        tfm.VolumeNorm(("const", -24)),
+        # tfm.VolumeNorm(("const", -24)),
         # tfm.PitchShift(),
         tfm.RescaleAudio(),
     )
@@ -109,8 +131,10 @@ def load(
     load_weights: bool = False,
     fine_tune_checkpoint: Optional[str] = None,
 ):
-    codec = LAC.load(args["codec_ckpt"], map_location="cpu")
+    
+    codec: DAC = load_dac(dac.__model_version__)
     codec.eval()
+    codec.to(accel.device)
 
     model, v_extra = None, {}
 
@@ -214,7 +238,6 @@ def accuracy(
 def train(
     args,
     accel: at.ml.Accelerator,
-    codec_ckpt: str = None,
     seed: int = 0,
     save_path: str = "ckpt",
     max_epochs: int = int(100e3),
@@ -231,7 +254,6 @@ def train(
     quiet: bool = False,
     chroma_dropout: float = 0.2,
 ):
-    assert codec_ckpt is not None, "codec_ckpt is required"
 
     seed = seed + accel.local_rank
     at.util.seed(seed)
@@ -268,6 +290,7 @@ def train(
         num_workers=num_workers,
         batch_size=batch_size,
         collate_fn=train_data.collate,
+        pin_memory=True,
     )
     val_dataloader = accel.prepare_dataloader(
         val_data,
@@ -277,7 +300,7 @@ def train(
         collate_fn=val_data.collate,
     )
 
-    criterion = CrossEntropyLoss()
+    criterion = CrossEntropyLoss(ignore_index=IGNORE_INDEX)
 
     # chroma conditioning   
     vn = accel.unwrap(model)
@@ -351,7 +374,7 @@ def train(
             vn = accel.unwrap(model)
             with accel.autocast():
                 with torch.inference_mode():
-                    codec.to(accel.device)
+                    
                     z = codec.encode(signal.samples, signal.sample_rate)["codes"]
                     z = z[:, : vn.n_codebooks, :]
 
@@ -373,8 +396,6 @@ def train(
                         chroma=chroma, 
                         chroma_dropout=chroma_dropout,
                     )
-                    # for mask mode
-                    z_hat = vn.add_truth_to_logits(z, z_hat, mask)
 
                 target = codebook_flatten(
                     z[:, vn.n_conditioning_codebooks :, :],
@@ -451,8 +472,7 @@ def train(
                 chroma=chroma, 
                 chroma_dropout=chroma_dropout
             )
-            # for mask mode
-            z_hat = vn.add_truth_to_logits(z, z_hat, mask)
+
 
             target = codebook_flatten(
                 z[:, vn.n_conditioning_codebooks :, :],
@@ -568,12 +588,14 @@ def train(
                 z_mask_latent, 
                 chroma=self._compute_chroma(signal, z, vn), 
             )
-            # for mask mode
-            z_hat = vn.add_truth_to_logits(z, z_hat, mask)
 
             z_pred = torch.softmax(z_hat, dim=1).argmax(dim=1)
             z_pred = codebook_unflatten(z_pred, n_c=vn.n_predict_codebooks)
+            # add back any unmasked tokens
             z_pred = torch.cat([z[:, : vn.n_conditioning_codebooks, :], z_pred], dim=1)
+            z_pred = torch.where(
+                z_mask == vn.mask_token, z_pred, z_mask
+            )
 
             generated = vn.to_signal(z_pred, codec)
             reconstructed = vn.to_signal(z, codec)
@@ -595,7 +617,6 @@ def train(
                     )
 
             self.save_sampled(z)
-            self.save_imputation(z)
 
     trainer = Trainer(writer=writer, quiet=quiet)
 

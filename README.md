@@ -7,15 +7,15 @@ This repository contains recipes for training generative music models on top of 
 install AudioTools
 
 ```bash
-git clone https://github.com/hugofloresgarcia/audiotools.git
+git clone https://github.com/descriptinc/audiotools.git
 pip install -e ./audiotools
 ```
 
-install the LAC library. 
+install the DAC library. 
 
 ```bash
-git clone https://github.com/hugofloresgarcia/lac.git
-pip install -e ./lac
+git clone https://github.com/descriptinc/descript-audio-codec.git
+pip install -e ./descript-audio-codec
 ```
 
 install VampNet

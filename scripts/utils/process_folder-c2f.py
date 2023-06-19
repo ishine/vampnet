@@ -79,7 +79,7 @@ def main(
         duration: float = 3.0,
     ):
     from vampnet.modules.transformer import VampNet
-    from lac.model.lac import LAC
+    from dac.model.dac import DAC
 
     models = {
         k: VampNet.load(p) for k, p in zip(model_keys, model_paths)
@@ -88,7 +88,7 @@ def main(
         model.eval()
     print(f"Loaded {len(models)} models.")
 
-    vqvae = LAC.load(vqvae_path)
+    vqvae = DAC.load(vqvae_path)
     vqvae.to(device)
     vqvae.eval()
     print("Loaded VQVAE.")

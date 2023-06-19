@@ -30,8 +30,8 @@ setup(
         "argbind>=0.3.2",
         "pytorch-ignite",
         "rich",
-        "audiotools @ git+https://github.com/hugofloresgarcia/audiotools.git",
-        "lac @ git+https://github.com/hugofloresgarcia/lac.git",
+        # "audiotools @ git+https://github.com/hugofloresgarcia/audiotools.git",
+        # "lac @ git+https://github.com/hugofloresgarcia/lac.git",
         "loralib", 
         "audiotools", 
         "dac @ git+https://github.com/descriptinc/descript-audio-codec.git"
