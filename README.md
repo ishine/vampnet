@@ -4,21 +4,7 @@ This repository contains recipes for training generative music models on top of 
 
 # Setting up
 
-install AudioTools
-
-```bash
-git clone https://github.com/descriptinc/audiotools.git
-pip install -e ./audiotools
-```
-
-install the DAC library.
-
-```bash
-git clone https://github.com/descriptinc/descript-audio-codec.git
-pip install -e ./descript-audio-codec
-```
-
-install VampNet
+install 
 
 ```bash
 git clone https://github.com/hugofloresgarcia/vampnet2.git
@@ -40,7 +26,15 @@ First, you'll want to set up your environment
 source ./env/env.sh
 ```
 
-## Staging a Run
+## Launching the Gradio Interface
+TODO: add instructions for the new model when we have it? 
+```bash
+python demo.py --args.load conf/interface/spotdl.yml --Interface.device cuda
+```
+
+## Training a model
+
+### Staging a Run
 
 Staging a run makes a copy of all the git-tracked files in the codebase and saves them to a folder for reproducibility. You can then run the training script from the staged folder.
 
@@ -48,13 +42,30 @@ Staging a run makes a copy of all the git-tracked files in the codebase and save
 stage --name my_run --run_dir /path/to/staging/folder
 ```
 
-## Training a model
+now, run the training script. 
 
 ```bash
-python scripts/exp/train.py --args.load conf/vampnet.yml --save_path /path/to/checkpoints
+python scripts/exp/train.py --args.load conf/vampnet.yml --save_path /path/to/checkpoint
 ```
 
+see `python scripts/exp/train.py -h` for more options.
+
+## Evaluating a model
+
+To evaluate a model, you'll need to generate samples from the test set, then compute metrics on those samples.
+
+### Generating Samples
+use the `scripts/utils/vamp_folder.py` script to generate samples from a folder of audio files.
+
+TODO: update interface ckpt
+```bash
+python scripts/utils/vamp_folder.py  --args.load conf/interface/spotdl.yml --Interface.device cuda --exp_type sampling-steps
+```
+
+see `python scripts/utils/vamp_folder.py -h` for more options.
+
 ## Fine-tuning
+TODO: will the new model need coarse and c2f? should update this script
 To fine-tune a model, use the script in `scripts/exp/fine_tune.py` to generate 3 configuration files: `c2f.yml`, `coarse.yml`, and `interface.yml`.
 The first two are used to fine-tune the coarse and fine models, respectively. The last one is used to fine-tune the interface.
 
@@ -84,7 +95,3 @@ python  demo.py --args.load conf/generated/<fine_tune_name>/interface.yml
 ```
 
 
-## Launching the Gradio Interface
-```bash
-python demo.py --args.load conf/interface/spotdl.yml --Interface.device cuda
-```
