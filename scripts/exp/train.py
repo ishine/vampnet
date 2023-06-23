@@ -7,23 +7,23 @@ from typing import Optional
 
 import argbind
 import audiotools as at
+import dac
 import torch
 import torch.nn as nn
 from audiotools import AudioSignal
 from audiotools.data import transforms
+from dac.model.dac import DAC
+from dac.utils import load_model as load_dac
 from einops import rearrange
 from rich import pretty
 from rich.traceback import install
 from tensorboardX import SummaryWriter
 
 import vampnet
-from vampnet.modules.transformer import VampNet
-from vampnet.util import codebook_unflatten, codebook_flatten
 from vampnet import mask as pmask
-
-from dac.model.dac import DAC
-import dac
-from dac.utils import load_model as load_dac
+from vampnet.modules.transformer import VampNet
+from vampnet.util import codebook_flatten
+from vampnet.util import codebook_unflatten
 
 
 # Enable cudnn autotuner to speed up training
@@ -33,7 +33,6 @@ torch.backends.cudnn.benchmark = bool(int(os.getenv("CUDNN_BENCHMARK", 1)))
 
 
 class Profiler:
-
     def __init__(self):
         self.ticks = [[time.time(), None]]
 
@@ -131,7 +130,6 @@ def load(
     load_weights: bool = False,
     fine_tune_checkpoint: Optional[str] = None,
 ):
-    
     codec: DAC = load_dac(dac.__model_version__)
     codec.eval()
     codec.to(accel.device)
@@ -151,20 +149,16 @@ def load(
                 f"Could not find a VampNet checkpoint in {kwargs['folder']}"
             )
 
-
     if args["fine_tune"]:
         assert fine_tune_checkpoint is not None, "Must provide a fine-tune checkpoint"
         model = VampNet.load(location=Path(fine_tune_checkpoint), map_location="cpu")
-
 
     model = VampNet() if model is None else model
 
     model = accel.prepare_model(model)
 
     # assert accel.unwrap(model).n_codebooks == codec.quantizer.n_codebooks
-    assert (
-        accel.unwrap(model).vocab_size == codec.quantizer.quantizers[0].codebook_size
-    )
+    assert accel.unwrap(model).vocab_size == codec.quantizer.quantizers[0].codebook_size
 
     optimizer = AdamW(model.parameters(), use_zero=accel.use_ddp)
     scheduler = NoamScheduler(optimizer, d_model=accel.unwrap(model).embedding_dim)
@@ -186,7 +180,6 @@ def load(
         "scheduler": scheduler,
         "trainer_state": trainer_state,
     }
-
 
 
 def num_params_hook(o, p):
@@ -243,18 +236,24 @@ def train(
     max_epochs: int = int(100e3),
     epoch_length: int = 1000,
     save_audio_epochs: int = 2,
-    save_epochs: list = [10, 50, 100, 200, 300, 400,],
+    save_epochs: list = [
+        10,
+        50,
+        100,
+        200,
+        300,
+        400,
+    ],
     batch_size: int = 48,
     grad_acc_steps: int = 1,
     val_idx: list = [0, 1, 2, 3, 4, 5, 6, 7, 8, 9],
     num_workers: int = 10,
     detect_anomaly: bool = False,
     grad_clip_val: float = 5.0,
-    fine_tune: bool = False, 
+    fine_tune: bool = False,
     quiet: bool = False,
     chroma_dropout: float = 0.2,
 ):
-
     seed = seed + accel.local_rank
     at.util.seed(seed)
     writer = None
@@ -274,7 +273,7 @@ def train(
     sample_rate = codec.sample_rate
 
     # a better rng for sampling from our schedule
-    rng = torch.quasirandom.SobolEngine(1, scramble=True, seed=seed)  
+    rng = torch.quasirandom.SobolEngine(1, scramble=True, seed=seed)
 
     # log a model summary w/ num params
     if accel.local_rank == 0:
@@ -302,24 +301,24 @@ def train(
 
     criterion = CrossEntropyLoss(ignore_index=IGNORE_INDEX)
 
-    # chroma conditioning   
+    # chroma conditioning
     vn = accel.unwrap(model)
     if vn.chroma_dim > 0:
         from vampnet.modules.condition import ChromaStemConditioner
+
         chroma_conditioner = ChromaStemConditioner(
-            1, # unused. we have our own embedding layer 
-            codec.sample_rate, 
+            1,  # unused. we have our own embedding layer
+            codec.sample_rate,
             n_chroma=vn.chroma_dim,
             duration=train_data.duration,
-            winhop=codec.hop_length, 
+            winhop=codec.hop_length,
             device=accel.device,
         )
-            
 
     if fine_tune:
         import loralib as lora
-        lora.mark_only_lora_as_trainable(model)
 
+        lora.mark_only_lora_as_trainable(model)
 
     class Trainer(at.ml.BaseTrainer):
         _last_grad_norm = 0.0
@@ -355,16 +354,15 @@ def train(
                         top_k=topk,
                     )
 
-
         def _compute_chroma(self, signal, z, vn):
             if vn.chroma_dim > 0:
                 chroma = chroma_conditioner._get_wav_embedding(signal.samples)
                 assert chroma.shape[1] == z.shape[-1]
                 chroma = rearrange(chroma, "b t c -> b c t")
-            else:   
+            else:
                 chroma = None
             return chroma
-    
+
         def train_loop(self, engine, batch):
             model.train()
             batch = at.util.prepare_batch(batch, accel.device)
@@ -374,7 +372,6 @@ def train(
             vn = accel.unwrap(model)
             with accel.autocast():
                 with torch.inference_mode():
-                    
                     z = codec.encode(signal.samples, signal.sample_rate)["codes"]
                     z = z[:, : vn.n_codebooks, :]
 
@@ -386,14 +383,14 @@ def train(
                 mask = pmask.random(z, r)
                 mask = pmask.codebook_unmask(mask, vn.n_conditioning_codebooks)
                 z_mask, mask = pmask.apply_mask(z, mask, vn.mask_token)
-                
+
                 z_mask_latent = vn.embedding.from_codes(z_mask, codec)
 
                 dtype = torch.bfloat16 if accel.amp else None
                 with accel.autocast(dtype=dtype):
                     z_hat = model(
-                        z_mask_latent, 
-                        chroma=chroma, 
+                        z_mask_latent,
+                        chroma=chroma,
                         chroma_dropout=chroma_dropout,
                     )
 
@@ -418,7 +415,6 @@ def train(
                     output=output,
                 )
 
-            
             accel.backward(output["loss"] / grad_acc_steps)
 
             output["other/learning_rate"] = optimizer.param_groups[0]["lr"]
@@ -467,20 +463,13 @@ def train(
 
             chroma = self._compute_chroma(signal, z, vn)
 
-            z_hat = model(
-                z_mask_latent, 
-                chroma=chroma, 
-                chroma_dropout=chroma_dropout
-            )
-
+            z_hat = model(z_mask_latent, chroma=chroma, chroma_dropout=chroma_dropout)
 
             target = codebook_flatten(
                 z[:, vn.n_conditioning_codebooks :, :],
             )
 
-            flat_mask = codebook_flatten(
-                mask[:, vn.n_conditioning_codebooks :, :]
-            )
+            flat_mask = codebook_flatten(mask[:, vn.n_conditioning_codebooks :, :])
 
             output = {}
             # replace target with ignore index for masked tokens
@@ -520,12 +509,12 @@ def train(
                 tags.append("best")
 
             if fine_tune:
-                for tag in tags: 
-                    # save the lora model 
+                for tag in tags:
+                    # save the lora model
                     (Path(save_path) / tag).mkdir(parents=True, exist_ok=True)
                     torch.save(
-                        lora.lora_state_dict(accel.unwrap(model)), 
-                        f"{save_path}/{tag}/lora.pth"
+                        lora.lora_state_dict(accel.unwrap(model)),
+                        f"{save_path}/{tag}/lora.pth",
                     )
 
             for tag in tags:
@@ -541,9 +530,9 @@ def train(
 
                 accel.unwrap(model).metadata = metadata
                 accel.unwrap(model).save_to_folder(
-                    f"{save_path}/{tag}", model_extra,
+                    f"{save_path}/{tag}",
+                    model_extra,
                 )
-
 
         def save_sampled(self, z):
             num_samples = z.shape[0]
@@ -560,7 +549,6 @@ def train(
                     step=self.state.epoch,
                     plot_fn=None,
                 )
-
 
         @torch.no_grad()
         def save_samples(self):
@@ -585,17 +573,15 @@ def train(
             z_mask_latent = vn.embedding.from_codes(z_mask, codec)
 
             z_hat = model(
-                z_mask_latent, 
-                chroma=self._compute_chroma(signal, z, vn), 
+                z_mask_latent,
+                chroma=self._compute_chroma(signal, z, vn),
             )
 
             z_pred = torch.softmax(z_hat, dim=1).argmax(dim=1)
             z_pred = codebook_unflatten(z_pred, n_c=vn.n_predict_codebooks)
             # add back any unmasked tokens
             z_pred = torch.cat([z[:, : vn.n_conditioning_codebooks, :], z_pred], dim=1)
-            z_pred = torch.where(
-                z_mask == vn.mask_token, z_pred, z_mask
-            )
+            z_pred = torch.where(z_mask == vn.mask_token, z_pred, z_mask)
 
             generated = vn.to_signal(z_pred, codec)
             reconstructed = vn.to_signal(z, codec)

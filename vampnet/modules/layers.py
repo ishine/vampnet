@@ -8,6 +8,7 @@ import torch.nn.functional as F
 from einops import rearrange
 from torch.nn.utils import weight_norm
 
+
 # Scripting this brings model speed up 1.4x
 @torch.jit.script
 def snake(x, alpha):
@@ -82,10 +83,10 @@ class CodebookEmbedding(nn.Module):
         self.out_proj = nn.Conv1d(n_codebooks * self.latent_dim, self.emb_dim, 1)
 
     def from_codes(self, codes: torch.Tensor, codec):
-        """ 
-        get a sequence of continuous embeddings from a sequence of discrete codes. 
+        """
+        get a sequence of continuous embeddings from a sequence of discrete codes.
         unlike it's counterpart in the original VQ-VAE, this function adds for any special tokens
-        necessary for the language model, like <MASK>. 
+        necessary for the language model, like <MASK>.
         """
         n_codebooks = codes.shape[1]
         latent = []
@@ -111,4 +112,3 @@ class CodebookEmbedding(nn.Module):
         """
         x = self.out_proj(latents)
         return x
-

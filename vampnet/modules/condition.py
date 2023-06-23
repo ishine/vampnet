@@ -1,18 +1,21 @@
-import typing as tp
+import logging
 import math
+import typing as tp
 
 import demucs
-
-import torchaudio
 import torch
 import torch.nn as nn
-from torch import Tensor
-from einops import rearrange
 import torch.nn.functional as F
-import logging
+import torchaudio
+from einops import rearrange
+from torch import Tensor
+
 logger = logging.getLogger()
 
-def length_to_mask(lengths: torch.Tensor, max_len: tp.Optional[int] = None) -> torch.Tensor:
+
+def length_to_mask(
+    lengths: torch.Tensor, max_len: tp.Optional[int] = None
+) -> torch.Tensor:
     """Utility function to convert a tensor of sequence lengths to a mask (useful when working on padded sequences).
     For example: [3, 5] => [[1, 1, 1, 0, 0], [1, 1, 1, 1, 1]]
 
@@ -24,7 +27,9 @@ def length_to_mask(lengths: torch.Tensor, max_len: tp.Optional[int] = None) -> t
     """
     assert len(lengths.shape) == 1, "Length shape should be 1 dimensional."
     final_length = lengths.max().item() if not max_len else max_len
-    final_length = max(final_length, 1)  # if all seqs are of len zero we don't want a zero-size tensor
+    final_length = max(
+        final_length, 1
+    )  # if all seqs are of len zero we don't want a zero-size tensor
     return torch.arange(final_length)[None, :].to(lengths.device) < lengths[:, None]
 
 
@@ -33,8 +38,8 @@ class WavCondition(tp.NamedTuple):
     length: Tensor
     path: tp.List[tp.Optional[str]] = []
 
-ConditionType = tp.Tuple[Tensor, Tensor]  # condition, mask
 
+ConditionType = tp.Tuple[Tensor, Tensor]  # condition, mask
 
 
 def nullify_condition(condition: ConditionType, dim: int = 1):
@@ -50,14 +55,16 @@ def nullify_condition(condition: ConditionType, dim: int = 1):
         ConditionType: a tuple of null condition and mask
     """
     assert dim != 0, "dim cannot be the batch dimension!"
-    assert type(condition) == tuple and \
-        type(condition[0]) == Tensor and \
-        type(condition[1]) == Tensor, "'nullify_condition' got an unexpected input type!"
+    assert (
+        type(condition) == tuple
+        and type(condition[0]) == Tensor
+        and type(condition[1]) == Tensor
+    ), "'nullify_condition' got an unexpected input type!"
     cond, mask = condition
     B = cond.shape[0]
     last_dim = cond.dim() - 1
     out = cond.transpose(dim, last_dim)
-    out = 0. * out[..., :1]
+    out = 0.0 * out[..., :1]
     out = out.transpose(dim, last_dim)
     mask = torch.zeros((B, 1), device=out.device).int()
     assert cond.dim() == out.dim()
@@ -76,8 +83,9 @@ def nullify_wav(wav: Tensor) -> WavCondition:
     return WavCondition(
         wav=null_wav,
         length=torch.tensor([0] * wav.shape[0], device=wav.device),
-        path=['null_wav'] * wav.shape[0]
+        path=["null_wav"] * wav.shape[0],
     )
+
 
 class BaseConditioner(nn.Module):
     """Base model for all conditioner modules. We allow the output dim to be different
@@ -88,6 +96,7 @@ class BaseConditioner(nn.Module):
         dim (int): Hidden dim of the model (text-encoder/LUT).
         output_dim (int): Output dim of the conditioner.
     """
+
     def __init__(self, dim, output_dim):
         super().__init__()
         self.dim = dim
@@ -126,6 +135,7 @@ class WaveformConditioner(BaseConditioner):
         output_dim (int): Output dimension.
         device (tp.Union[torch.device, str]): Device.
     """
+
     def __init__(self, dim: int, output_dim: int, device: tp.Union[torch.device, str]):
         super().__init__(dim, output_dim)
         self.device = device
@@ -166,7 +176,7 @@ class WaveformConditioner(BaseConditioner):
         #     mask = torch.ones_like(embeds)
         # embeds = (embeds * mask.unsqueeze(2).to(self.device))
 
-        return embeds,  torch.ones_like(embeds)
+        return embeds, torch.ones_like(embeds)
 
 
 class ChromaStemConditioner(WaveformConditioner):
@@ -190,31 +200,40 @@ class ChromaStemConditioner(WaveformConditioner):
         device (tp.Union[torch.device, str], optional): Device for the conditioner.
         **kwargs: Additional parameters for the chroma extractor.
     """
-    def __init__(self, 
-            output_dim: int, 
-            sample_rate: int, 
-            n_chroma: int, 
-            duration: float, 
-            radix2_exp: int=12,
-            match_len_on_eval: bool = True, 
-            eval_wavs: tp.Optional[str] = None,
-            n_eval_wavs: int = 0, 
-            device: tp.Union[torch.device, str] = "cpu", 
-            **kwargs
-        ):
+
+    def __init__(
+        self,
+        output_dim: int,
+        sample_rate: int,
+        n_chroma: int,
+        duration: float,
+        radix2_exp: int = 12,
+        match_len_on_eval: bool = True,
+        eval_wavs: tp.Optional[str] = None,
+        n_eval_wavs: int = 0,
+        device: tp.Union[torch.device, str] = "cpu",
+        **kwargs,
+    ):
         from demucs import pretrained
-        self.__dict__["demucs"] = pretrained.get_model('htdemucs').to(device)
+
+        self.__dict__["demucs"] = pretrained.get_model("htdemucs").to(device)
 
         super().__init__(dim=n_chroma, output_dim=output_dim, device=device)
-
 
         self.sample_rate = sample_rate
         self.match_len_on_eval = match_len_on_eval
         self.duration = duration
-        self.stem2idx = {'drums': 0, 'bass': 1, 'other': 2, 'vocal': 3}
-        self.stem_idx = torch.LongTensor([self.stem2idx['vocal'], self.stem2idx['other']]).to(device)
-        self.chroma = ChromaExtractor(sample_rate=sample_rate, n_chroma=n_chroma, radix2_exp=radix2_exp,
-                                      device=device, **kwargs)
+        self.stem2idx = {"drums": 0, "bass": 1, "other": 2, "vocal": 3}
+        self.stem_idx = torch.LongTensor(
+            [self.stem2idx["vocal"], self.stem2idx["other"]]
+        ).to(device)
+        self.chroma = ChromaExtractor(
+            sample_rate=sample_rate,
+            n_chroma=n_chroma,
+            radix2_exp=radix2_exp,
+            device=device,
+            **kwargs,
+        )
         self.chroma_len = self._get_chroma_len()
 
     def _downsampling_factor(self):
@@ -222,7 +241,9 @@ class ChromaStemConditioner(WaveformConditioner):
 
     def _get_chroma_len(self):
         """Get length of chroma during training"""
-        dummy_wav = torch.zeros(1, int(self.sample_rate * self.duration), device=self.device)
+        dummy_wav = torch.zeros(
+            1, int(self.sample_rate * self.duration), device=self.device
+        )
         dummy_chr = self.chroma(dummy_wav)
         return dummy_chr.shape[1]
 
@@ -231,7 +252,9 @@ class ChromaStemConditioner(WaveformConditioner):
         from demucs.apply import apply_model
         from demucs.audio import convert_audio
 
-        wav = convert_audio(wav, self.sample_rate, self.demucs.samplerate, self.demucs.audio_channels)
+        wav = convert_audio(
+            wav, self.sample_rate, self.demucs.samplerate, self.demucs.audio_channels
+        )
         stems = apply_model(self.demucs, wav, device=self.device)
         stems = stems[:, self.stem_idx]  # extract stem
         stems = stems.sum(1)  # merge extracted stems
@@ -244,22 +267,22 @@ class ChromaStemConditioner(WaveformConditioner):
         # avoid 0-size tensors when we are working with null conds
         if wav.shape[-1] == 1:
             return self.chroma(wav)
-        
+
         stems = self._get_filtered_wav(wav)
         chroma = self.chroma(stems)
 
         if self.match_len_on_eval:
             b, t, c = chroma.shape
             if t > self.chroma_len:
-                chroma = chroma[:, :self.chroma_len]
-                print(f'chroma was truncated! ({t} -> {chroma.shape[1]})')
+                chroma = chroma[:, : self.chroma_len]
+                print(f"chroma was truncated! ({t} -> {chroma.shape[1]})")
             elif t < self.chroma_len:
                 # chroma = F.pad(chroma, (0, 0, 0, self.chroma_len - t))
                 n_repeat = int(math.ceil(self.chroma_len / t))
                 chroma = chroma.repeat(1, n_repeat, 1)
-                chroma = chroma[:, :self.chroma_len]
-                print(f'chroma was zero-padded! ({t} -> {chroma.shape[1]})')
-        
+                chroma = chroma[:, : self.chroma_len]
+                print(f"chroma was zero-padded! ({t} -> {chroma.shape[1]})")
+
         return chroma
 
 
@@ -277,14 +300,24 @@ class ChromaExtractor(nn.Module):
         norm (float, optional): Norm for chroma normalization. Defaults to inf.
         device (tp.Union[torch.device, str], optional): Device to use. Defaults to cpu.
     """
-    def __init__(self, sample_rate: int, n_chroma: int = 12, radix2_exp: int = 12,
-                 nfft: tp.Optional[int] = None, winlen: tp.Optional[int] = None, winhop: tp.Optional[int] = None,
-                 argmax: bool = False, norm: float = torch.inf, device: tp.Union[torch.device, str] = "cpu"):
+
+    def __init__(
+        self,
+        sample_rate: int,
+        n_chroma: int = 12,
+        radix2_exp: int = 12,
+        nfft: tp.Optional[int] = None,
+        winlen: tp.Optional[int] = None,
+        winhop: tp.Optional[int] = None,
+        argmax: bool = False,
+        norm: float = torch.inf,
+        device: tp.Union[torch.device, str] = "cpu",
+    ):
         super().__init__()
         from librosa import filters
 
         self.device = device
-        self.winlen = winlen or 2 ** radix2_exp
+        self.winlen = winlen or 2**radix2_exp
         self.nfft = nfft or self.winlen
         self.winhop = winhop or (self.winlen // 4)
         self.sr = sample_rate
@@ -293,11 +326,20 @@ class ChromaExtractor(nn.Module):
         self.argmax = argmax
 
         self.window = torch.hann_window(self.winlen).to(device)
-        self.fbanks = torch.from_numpy(filters.chroma(sr=sample_rate, n_fft=self.nfft, tuning=0,
-                                                      n_chroma=self.n_chroma)).to(device)
-        self.spec = torchaudio.transforms.Spectrogram(n_fft=self.nfft, win_length=self.winlen,
-                                                      hop_length=self.winhop, power=2, center=True,
-                                                      pad=0, normalized=True).to(device)
+        self.fbanks = torch.from_numpy(
+            filters.chroma(
+                sr=sample_rate, n_fft=self.nfft, tuning=0, n_chroma=self.n_chroma
+            )
+        ).to(device)
+        self.spec = torchaudio.transforms.Spectrogram(
+            n_fft=self.nfft,
+            win_length=self.winlen,
+            hop_length=self.winhop,
+            power=2,
+            center=True,
+            pad=0,
+            normalized=True,
+        ).to(device)
 
     def forward(self, wav):
         T = wav.shape[-1]
@@ -306,11 +348,15 @@ class ChromaExtractor(nn.Module):
         if T < self.nfft:
             pad = self.nfft - T
             r = 0 if pad % 2 == 0 else 1
-            wav = F.pad(wav, (pad // 2, pad // 2 + r), 'constant', 0)
-            assert wav.shape[-1] == self.nfft, f'expected len {self.nfft} but got {wav.shape[-1]}'
+            wav = F.pad(wav, (pad // 2, pad // 2 + r), "constant", 0)
+            assert (
+                wav.shape[-1] == self.nfft
+            ), f"expected len {self.nfft} but got {wav.shape[-1]}"
         spec = self.spec(wav).squeeze(1)
         raw_chroma = torch.einsum("cf,...ft->...ct", self.fbanks, spec)
-        norm_chroma = torch.nn.functional.normalize(raw_chroma, p=self.norm, dim=-2, eps=1e-6)
+        norm_chroma = torch.nn.functional.normalize(
+            raw_chroma, p=self.norm, dim=-2, eps=1e-6
+        )
         norm_chroma = rearrange(norm_chroma, "b d t -> b t d")
 
         if self.argmax:
@@ -322,18 +368,27 @@ class ChromaExtractor(nn.Module):
 
 
 if __name__ == "__main__":
-
     from audiotools import AudioSignal
-    sig = AudioSignal.salient_excerpt("/media/CHONK/hugo/loras/dariacore/c0ncernn - 1235.mp3", duration=10).to("cuda:0").to_mono()
-    hop=768
+
+    sig = (
+        AudioSignal.salient_excerpt(
+            "/media/CHONK/hugo/loras/dariacore/c0ncernn - 1235.mp3", duration=10
+        )
+        .to("cuda:0")
+        .to_mono()
+    )
+    hop = 768
 
     conditioner = ChromaStemConditioner(
-        output_dim=512, sample_rate=sig.sample_rate, 
-        n_chroma=12, duration=10.0, device=sig.device,
+        output_dim=512,
+        sample_rate=sig.sample_rate,
+        n_chroma=12,
+        duration=10.0,
+        device=sig.device,
         winhop=hop,
     )
 
-    cond, cond_mask= conditioner((sig.samples, None, None))
+    cond, cond_mask = conditioner((sig.samples, None, None))
 
     print(cond.shape)
     print(cond)

@@ -59,7 +59,6 @@ def mkdir(path: Union[Path, str]) -> Path:
     return p
 
 
-
 ###################
 #    beat data    #
 ###################

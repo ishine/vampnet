@@ -8,9 +8,9 @@ import tqdm
 
 
 from pedalboard import (
-   Compressor, Gain, Chorus, LadderFilter, Phaser, Convolution, Reverb, Pedalboard 
+   Compressor, Gain, Chorus, LadderFilter, Phaser, Convolution, Reverb, Pedalboard
 )
-from pedalboard.io import AudioFile 
+from pedalboard.io import AudioFile
 
 # Read in a whole file, resampling to our desired sample rate:
 samplerate = 44100.0
@@ -35,10 +35,10 @@ def augment(
     dest_folder: Path,
     n_augmentations: int = 10,
 ):
-    """ 
-        Augment a folder of audio files by applying audiotools and pedalboard transforms. 
+    """
+        Augment a folder of audio files by applying audiotools and pedalboard transforms.
 
-        The dest foler will contain a folder for each of the clean dataset's files. 
+        The dest foler will contain a folder for each of the clean dataset's files.
         Under each of these folders, there will be a clean file and many augmented files.
     """
 
