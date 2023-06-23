@@ -42,7 +42,7 @@ python app.py --args.load conf/interface.yml --Interface.device cuda
 To train a model, run the following script: 
 
 ```bash
-python scripts/exp/train.py --args.load conf/vampnet.yml --save_path /path/to/checkpoints
+python scripts/utils/vamp_folder.py  --args.load conf/interface/spotdl.yml --Interface.device cuda --exp_type sampling-steps
 ```
 
 You can edit `conf/vampnet.yml` to change the dataset paths or any training hyperparameters. 
