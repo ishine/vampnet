@@ -123,11 +123,9 @@ def beat_mask(ctx_time):
             after_beat_s=ctx_time/2,
             invert=True
         )
-
         z = interface.encode(sig)
-
         zv = interface.coarse_vamp(
-            z, beat_mask
+            z, beat_mask, 
         )
 
         zv = interface.coarse_to_fine(zv)
@@ -194,7 +192,7 @@ EXP_REGISTRY["musical-sampling"] = {
 @argbind.bind(without_prefix=True)
 def main(
         sources=[
-            "/media/CHONK/hugo/spotdl/val",
+            "/media/CHONK/hugo/spotdl/audio-test",
         ], 
         output_dir: str = "./samples",
         max_excerpts: int = 2000,

@@ -11,12 +11,9 @@ import loralib as lora
 import audiotools as at
 from x_transformers import  Encoder, ContinuousTransformerWrapper
 
-from .activations import get_activation
 from .layers import CodebookEmbedding
-from .layers import FiLM
-from .layers import SequentialWithFiLM
 from .layers import WNConv1d
-from ..util import scalar_to_batch_tensor, codebook_flatten, codebook_unflatten
+from ..util import codebook_flatten, codebook_unflatten
 from ..mask import _gamma
 from .condition import ChromaStemConditioner
 
@@ -113,7 +110,6 @@ class VampNet(at.ml.BaseModel):
         out = rearrange(out, "b n d -> b d n")
 
         out = self.classifier(out)
-#
         out = rearrange(out, "b (p c) t -> b p (t c)", c=self.n_predict_codebooks)
 
         return out
@@ -155,6 +151,7 @@ class VampNet(at.ml.BaseModel):
         typical_min_tokens=1,
         return_signal=True,
     ):
+        # TODO: need to take chroma in as input, and then implement classifier free guidance
         logging.debug(f"beginning generation with {sampling_steps} steps")
 
         #####################
@@ -279,6 +276,7 @@ class VampNet(at.ml.BaseModel):
                 mask.bool(), sampled_z, z_masked
             )
             logging.debug(f"added z back into sampled z with shape: {sampled_z.shape}")
+
 
             # ignore any tokens that weren't masked
             selected_probs = torch.where(
