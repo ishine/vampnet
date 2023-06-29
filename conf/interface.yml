@@ -1,5 +1,3 @@
-
-
 Interface.coarse_ckpt: ./models/vampnet/coarse.pth
 Interface.coarse2fine_ckpt: ./models/vampnet/c2f.pth
 Interface.codec_ckpt: ./models/vampnet/codec.pth

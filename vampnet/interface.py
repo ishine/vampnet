@@ -11,8 +11,9 @@ from .modules.transformer import VampNet
 from .beats import WaveBeat
 from .mask import *
 
-# from dac.model.dac import DAC
-from lac.model.lac import LAC as DAC
+import dac
+from dac.model.dac import DAC
+from dac.utils import load_model as load_dac
 
 
 def signal_concat(
@@ -50,6 +51,7 @@ def _load_model(
     model.chunk_size_s = chunk_size_s
     return model
 
+DAC_VERSION = dac.__model_version__
 
 class Interface(torch.nn.Module):
     def __init__(
@@ -58,15 +60,14 @@ class Interface(torch.nn.Module):
         coarse_lora_ckpt: str = None,
         coarse2fine_ckpt: str = None,
         coarse2fine_lora_ckpt: str = None,
-        codec_ckpt: str = None,
+        dac_version: str = DAC_VERSION,
         wavebeat_ckpt: str = None,
         device: str = "cpu",
         coarse_chunk_size_s: int = 10,
         coarse2fine_chunk_size_s: int = 3,
     ):
         super().__init__()
-        assert codec_ckpt is not None, "must provide a codec checkpoint"
-        self.codec = DAC.load(Path(codec_ckpt))
+        self.codec: DAC = load_dac(dac_version)
         self.codec.eval()
         self.codec.to(device)
 

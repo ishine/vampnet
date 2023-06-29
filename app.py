@@ -54,10 +54,14 @@ def load_example_audio():
     return "./assets/example.wav"
 
 
-def _vamp(data, return_mask=False):
+def _vamp(data, return_mask=False, audio=None):
     out_dir = OUT_DIR / str(uuid.uuid4())
     out_dir.mkdir()
-    sig = at.AudioSignal(data[input_audio])
+
+    sig = at.AudioSignal(data[input_audio]) if audio is None else audio
+    # pitch shift input
+
+    # TODO: random pitch shift of segments in the signal to prompt! window size should be a parameter, pitch shift width should be a parameter
 
     z = interface.encode(sig)
 
@@ -106,7 +110,7 @@ def _vamp(data, return_mask=False):
         gen_fn=interface.coarse.generate,
     )
 
-    if use_coarse2fine:
+    if data[use_coarse2fine]:
         zv = interface.coarse_to_fine(zv, temperature=data[temp])
 
     sig = interface.to_signal(zv).cpu()
@@ -122,8 +126,15 @@ def _vamp(data, return_mask=False):
         return sig.path_to_file
 
 
+def generate(data):
+    audio = at.AudioSignal.zeros(interface.coarse.chunk_size_s, interface.codec.sample_rate)
+    return _vamp(data, return_mask=True, audio=audio)
+
 def vamp(data):
-    return _vamp(data, return_mask=True)
+    if data[unconditional_gen]:
+        return generate(data)
+    else:
+        return _vamp(data, return_mask=True)
 
 
 def api_vamp(data):
@@ -196,13 +207,13 @@ with gr.Blocks() as demo:
             load_example_audio_button = gr.Button("or load example audio")
 
             input_audio = gr.Audio(
-                label="input audio",
+                label="input audio (will be ignored if unconditional)",
                 interactive=False,
                 type="filepath",
             )
 
             audio_mask = gr.Audio(
-                label="audio mask (listen to this to hear the mask hints)",
+                label="audio mask (you should listen to this to hear the mask hints)",
                 interactive=False,
                 type="filepath",
             )
@@ -411,9 +422,9 @@ with gr.Blocks() as demo:
                 value=36,
             )
 
-            dropout = gr.Slider(
-                label="mask dropout", minimum=0.0, maximum=1.0, step=0.01, value=0.0
-            )
+                dropout = gr.Slider(
+                    label="mask dropout", minimum=0.0, maximum=1.0, step=0.01, value=0.0
+                )
 
         # mask settings
         with gr.Column():
@@ -422,18 +433,19 @@ with gr.Blocks() as demo:
                 label="output audio", interactive=False, type="filepath"
             )
 
-            notes_text = gr.Textbox(
-                label="type any notes about the generated audio here",
-                value="",
-                interactive=True,
-            )
-            save_button = gr.Button("save vamp")
-            download_file = gr.File(
-                label="vamp to download will appear here", interactive=False
-            )
-            use_as_input_button = gr.Button("use output as input")
+            with gr.Accordion("liked your output?", open=False):
+                notes_text = gr.Textbox(
+                    label="type any notes about the generated audio here",
+                    value="",
+                    interactive=True,
+                )
+                save_button = gr.Button("save vamp")
+                download_file = gr.File(
+                    label="vamp to download will appear here", interactive=False
+                )
+                use_as_input_button = gr.Button("use output as input")
 
-            thank_you = gr.Markdown("")
+                thank_you = gr.Markdown("")
 
     _inputs = {
             input_audio, 
