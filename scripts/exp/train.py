@@ -550,6 +550,28 @@ def train(
                     plot_fn=None,
                 )
 
+        def save_inpaint(self, z):
+            num_samples = z.shape[0]
+            n_inpaint = z.shape[-1] // 4
+            mask = pmask.inpaint(z, n_inpaint, n_inpaint)
+
+            # z_mask, mask = pmask.apply_mask(z, mask, vn.mask_token)
+
+            for i in range(num_samples):
+                sampled = accel.unwrap(model).generate(
+                    codec=codec,
+                    time_steps=z.shape[-1],
+                    start_tokens=z[i : i + 1],
+                    mask=mask[i : i + 1]
+                )
+                sampled.cpu().write_audio_to_tb(
+                    f"inpaint/{i}",
+                    self.writer,
+                    step=self.state.epoch,
+                    plot_fn=None,
+                )
+
+
         @torch.no_grad()
         def save_samples(self):
             model.eval()
@@ -603,6 +625,7 @@ def train(
                     )
 
             self.save_sampled(z)
+            self.save_inpaint(z)
 
     trainer = Trainer(writer=writer, quiet=quiet)
 

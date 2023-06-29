@@ -32,60 +32,6 @@ dataset = at.data.datasets.AudioDataset(
     without_replacement=True,
 )
 
-
-checkpoints = {
-    "spotdl": {
-        "coarse": "./models/spotdl/coarse.pth",
-        "c2f": "./models/spotdl/c2f.pth",
-        "codec": "./models/spotdl/codec.pth",
-        "full_ckpt": True,
-    },
-    "berta": {
-        "coarse": "./models/finetuned/berta-goldman-speech/coarse.pth",
-        "c2f": "./models/finetuned/berta-goldman-speech/c2f.pth",
-        "codec": "./model/spotdl/codec.pth",
-        "full_ckpt": True,
-    },
-    "xeno-canto-2": {
-        "coarse": "./models/finetuned/xeno-canto-2/coarse.pth",
-        "c2f": "./models/finetuned/xeno-canto-2/c2f.pth",
-        "codec": "./models/spotdl/codec.pth",
-        "full_ckpt": True,
-    },
-    "panchos": {
-        "coarse": "./models/finetuned/panchos/coarse.pth",
-        "c2f": "./models/finetuned/panchos/c2f.pth",
-        "codec": "./models/spotdl/codec.pth",
-        "full_ckpt": False,
-    },
-    "tv-choir": {
-        "coarse": "./models/finetuned/tv-choir/coarse.pth",
-        "c2f": "./models/finetuned/tv-choir/c2f.pth",
-        "codec": "./models/spotdl/codec.pth",
-        "full_ckpt": False,
-    },
-    "titi": {
-        "coarse": "./models/finetuned/titi/coarse.pth",
-        "c2f": "./models/finetuned/titi/c2f.pth",
-        "codec": "./models/spotdl/codec.pth",
-        "full_ckpt": False,
-    },
-    "titi-clean": {
-        "coarse": "./models/finetuned/titi-clean/coarse.pth",
-        "c2f": "./models/finetuned/titi-clean/c2f.pth",
-        "codec": "./models/spotdl/codec.pth",
-        "full_ckpt": False,
-    },
-    "breaks-steps": {
-        "coarse": "./models/finetuned/breaks-steps/coarse.pth",
-        "c2f": None,  # "./models/finetuned/breaks-steps/c2f.pth",
-        "codec": "./models/spotdl/codec.pth",
-        "full_ckpt": False,
-    },
-}
-interface.checkpoint_key = "spotdl"
-
-
 OUT_DIR = Path("gradio-outputs")
 OUT_DIR.mkdir(exist_ok=True, parents=True)
 
@@ -115,20 +61,11 @@ def load_random_audio():
     return sig.path_to_file
 
 
-def _vamp(data, return_mask=False):
-    # if our checkpoint key is different, we need to load a new checkpoint
-    if data[checkpoint_key] != interface.checkpoint_key:
-        print(f"loading checkpoint {data[checkpoint_key]}")
-        interface.lora_load(
-            checkpoints[data[checkpoint_key]]["coarse"],
-            checkpoints[data[checkpoint_key]]["c2f"],
-            checkpoints[data[checkpoint_key]]["full_ckpt"],
-        )
-        interface.checkpoint_key = data[checkpoint_key]
-
+def _vamp(data, return_mask=False, audio=None):
     out_dir = OUT_DIR / str(uuid.uuid4())
     out_dir.mkdir()
-    sig = at.AudioSignal(data[input_audio])
+
+    sig = at.AudioSignal(data[input_audio]) if audio is None else audio
     # pitch shift input
 
     # TODO: random pitch shift of segments in the signal to prompt! window size should be a parameter, pitch shift width should be a parameter
@@ -173,7 +110,7 @@ def _vamp(data, return_mask=False):
         gen_fn=interface.coarse.generate,
     )
 
-    if use_coarse2fine:
+    if data[use_coarse2fine]:
         zv = interface.coarse_to_fine(zv, temperature=data[temp])
 
     sig = interface.to_signal(zv).cpu()
@@ -189,8 +126,15 @@ def _vamp(data, return_mask=False):
         return sig.path_to_file
 
 
+def generate(data):
+    audio = at.AudioSignal.zeros(interface.coarse.chunk_size_s, interface.codec.sample_rate)
+    return _vamp(data, return_mask=True, audio=audio)
+
 def vamp(data):
-    return _vamp(data, return_mask=True)
+    if data[unconditional_gen]:
+        return generate(data)
+    else:
+        return _vamp(data, return_mask=True)
 
 
 def api_vamp(data):
@@ -238,22 +182,29 @@ def save_vamp(data):
 with gr.Blocks() as demo:
     with gr.Row():
         with gr.Column():
+            checkpoint_key = gr.Radio(
+                label="checkpoint", choices=["deprecated"], value="deprecated"
+            )
             use_coarse2fine = gr.Checkbox(label="use coarse2fine", value=True)
-
+            
             manual_audio_upload = gr.File(
                 label=f"upload some audio (will be randomly trimmed to max of {interface.coarse.chunk_size_s:.2f}s)",
                 file_types=["audio"],
             )
             load_random_audio_button = gr.Button("or load random audio")
+            
+            unconditional_gen = gr.Checkbox(
+                label="unconditional generation?", value=False
+            )
 
             input_audio = gr.Audio(
-                label="input audio",
+                label="input audio (will be ignored if unconditional)",
                 interactive=False,
                 type="filepath",
             )
 
             audio_mask = gr.Audio(
-                label="audio mask (listen to this to hear the mask hints)",
+                label="audio mask (you should listen to this to hear the mask hints)",
                 interactive=False,
                 type="filepath",
             )
@@ -269,35 +220,36 @@ with gr.Blocks() as demo:
 
         # mask settings
         with gr.Column():
-            rand_mask_intensity = gr.Slider(
-                label="random mask intensity. (If this is less than 1, scatters prompts throughout the audio, should be between 0.9 and 1.0)",
-                minimum=0.0,
-                maximum=1.0,
-                value=1.0,
-            )
+            with gr.Accordion("mask settings", open=True):
+                rand_mask_intensity = gr.Slider(
+                    label="random mask intensity. (If this is less than 1, scatters prompts throughout the audio, should be between 0.9 and 1.0)",
+                    minimum=0.0,
+                    maximum=1.0,
+                    value=1.0,
+                )
 
-            periodic_p = gr.Slider(
-                label="periodic prompt  (0.0 means no hint, 2 - lots of hints, 8 - a couple of hints, 16 - occasional hint, 32 - very occasional hint, etc)",
-                minimum=0,
-                maximum=128,
-                step=1,
-                value=3,
-            )
-            periodic_w = gr.Slider(
-                label="periodic prompt width (steps, 1 step ~= 10milliseconds)",
-                minimum=1,
-                maximum=20,
-                step=1,
-                value=1,
-            )
+                periodic_p = gr.Slider(
+                    label="periodic prompt  (0.0 means no hint, 2 - lots of hints, 8 - a couple of hints, 16 - occasional hint, 32 - very occasional hint, etc)",
+                    minimum=0,
+                    maximum=128,
+                    step=1,
+                    value=3,
+                )
+                periodic_w = gr.Slider(
+                    label="periodic prompt width (steps, 1 step ~= 10milliseconds)",
+                    minimum=1,
+                    maximum=20,
+                    step=1,
+                    value=1,
+                )
 
-            onset_mask_width = gr.Slider(
-                label="onset mask width (steps, 1 step ~= 10milliseconds)",
-                minimum=0,
-                maximum=20,
-                step=1,
-                value=5,
-            )
+                onset_mask_width = gr.Slider(
+                    label="onset mask width (steps, 1 step ~= 10milliseconds)",
+                    minimum=0,
+                    maximum=20,
+                    step=1,
+                    value=5,
+                )
 
             with gr.Accordion("extras ", open=False):
                 n_conditioning_codebooks = gr.Number(
@@ -327,10 +279,11 @@ with gr.Blocks() as demo:
                     maximum=10.0,
                     value=0.0,
                 )
-
-            temp = gr.Slider(label="temperature", minimum=0.0, maximum=1.5, value=0.8)
+        # mask settings
+        with gr.Column():
 
             with gr.Accordion("sampling settings", open=False):
+                temp = gr.Slider(label="temperature", minimum=0.0, maximum=1.5, value=0.8)
                 typical_filtering = gr.Checkbox(label="typical filtering ", value=True)
                 typical_mass = gr.Slider(
                     label="typical mass (should probably stay between 0.1 and 0.5)",
@@ -346,40 +299,38 @@ with gr.Blocks() as demo:
                     value=64,
                 )
 
-            num_steps = gr.Slider(
-                label="number of steps (should normally be between 12 and 36)",
-                minimum=1,
-                maximum=128,
-                step=1,
-                value=36,
-            )
+                num_steps = gr.Slider(
+                    label="number of steps (should normally be between 12 and 36)",
+                    minimum=1,
+                    maximum=128,
+                    step=1,
+                    value=36,
+                )
 
-            dropout = gr.Slider(
-                label="mask dropout", minimum=0.0, maximum=1.0, step=0.01, value=0.0
-            )
+                dropout = gr.Slider(
+                    label="mask dropout", minimum=0.0, maximum=1.0, step=0.01, value=0.0
+                )
 
-        # mask settings
-        with gr.Column():
-            checkpoint_key = gr.Radio(
-                label="checkpoint", choices=list(checkpoints.keys()), value="spotdl"
-            )
             vamp_button = gr.Button("vamp!!!")
+        
+            
             output_audio = gr.Audio(
                 label="output audio", interactive=False, type="filepath"
             )
 
-            notes_text = gr.Textbox(
-                label="type any notes about the generated audio here",
-                value="",
-                interactive=True,
-            )
-            save_button = gr.Button("save vamp")
-            download_file = gr.File(
-                label="vamp to download will appear here", interactive=False
-            )
-            use_as_input_button = gr.Button("use output as input")
+            with gr.Accordion("liked your output?", open=False):
+                notes_text = gr.Textbox(
+                    label="type any notes about the generated audio here",
+                    value="",
+                    interactive=True,
+                )
+                save_button = gr.Button("save vamp")
+                download_file = gr.File(
+                    label="vamp to download will appear here", interactive=False
+                )
+                use_as_input_button = gr.Button("use output as input")
 
-            thank_you = gr.Markdown("")
+                thank_you = gr.Markdown("")
 
     _inputs = {
         input_audio,
@@ -399,6 +350,7 @@ with gr.Blocks() as demo:
         typical_mass,
         typical_min_tokens,
         checkpoint_key,
+        unconditional_gen
     }
 
     # connect widgets
