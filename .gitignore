@@ -177,3 +177,6 @@ samples-*/**
 
 gradio-outputs/
 models/
+
+# generated finetuning confs
+conf/generated/ 

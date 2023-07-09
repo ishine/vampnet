@@ -1,0 +1,10 @@
+Interface.coarse_ckpt: ./runs/portavamp-maestro/latest/vampnet/weights.pth
+Interface.coarse2fine_ckpt: 
+Interface.coarse_chunk_size_s: 12
+Interface.coarse2fine_chunk_size_s: 3
+# Interface.wavebeat_ckpt: ./models/wavebeat.pth
+
+
+AudioLoader.sources:
+  # - /media/CHONK/hugo/spotdl/subsets/jazz-blues/
+  - /media/CHONK/null
