@@ -1,0 +1,19 @@
+$include:
+  - conf/base.yml
+
+
+
+VampNet.max_seq_len: 2048
+
+AudioDataset.duration: 12.0
+
+train/AudioLoader.sources:
+  - /media/CHONK/hugo/spotdl/audio-train
+
+
+val/AudioLoader.sources:
+  - /media/CHONK/hugo/spotdl/audio-val
+
+
+test/AudioLoader.sources:
+  - /media/CHONK/hugo/spotdl/audio-test

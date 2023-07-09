@@ -25,29 +25,23 @@ from vampnet.modules.transformer import VampNet
 from vampnet.util import codebook_flatten
 from vampnet.util import codebook_unflatten
 
+class SimpleTimer:
+    """Simple object for timing how long loops take."""
+
+    def __init__(self):
+        self.start_time = time.time()
+
+    def __call__(self, message=None):
+        time_taken = time.time() - self.start_time
+        self.start_time = time.time()
+        if message is not None:
+            print(f"{time_taken:1.4f}s: {message}")
+        return time_taken
 
 # Enable cudnn autotuner to speed up training
 # (can be altered by the funcs.seed function)
 torch.backends.cudnn.benchmark = bool(int(os.getenv("CUDNN_BENCHMARK", 1)))
 # Uncomment to trade memory for speed.
-
-
-class Profiler:
-    def __init__(self):
-        self.ticks = [[time.time(), None]]
-
-    def tick(self, msg):
-        self.ticks.append([time.time(), msg])
-
-    def __repr__(self):
-        rep = 80 * "=" + "\n"
-        for i in range(1, len(self.ticks)):
-            msg = self.ticks[i][1]
-            ellapsed = self.ticks[i][0] - self.ticks[i - 1][0]
-            rep += msg + f": {ellapsed*1000:.2f}ms\n"
-        rep += 80 * "=" + "\n\n\n"
-        return rep
-
 
 # Install to make things look nice
 warnings.filterwarnings("ignore", category=UserWarning)
@@ -364,11 +358,14 @@ def train(
             return chroma
 
         def train_loop(self, engine, batch):
+            timer = SimpleTimer()
+            output = {}
+
             model.train()
             batch = at.util.prepare_batch(batch, accel.device)
             signal = apply_transform(train_data.transform, batch)
+            output["perf/preprocess"] = timer()
 
-            output = {}
             vn = accel.unwrap(model)
             with accel.autocast():
                 with torch.inference_mode():
@@ -378,7 +375,9 @@ def train(
                     n_batch = z.shape[0]
                     r = rng.draw(n_batch)[:, 0].to(accel.device)
 
+                    output["perf/codec"] = timer()
                     chroma = self._compute_chroma(signal, z, vn)
+                    output["perf/chroma"] = timer()
 
                 mask = pmask.random(z, r)
                 mask = pmask.codebook_unmask(mask, vn.n_conditioning_codebooks)
@@ -393,6 +392,7 @@ def train(
                         chroma=chroma,
                         chroma_dropout=chroma_dropout,
                     )
+                    output["perf/model"] = timer()
 
                 target = codebook_flatten(
                     z[:, vn.n_conditioning_codebooks :, :],
@@ -414,8 +414,10 @@ def train(
                     flat_mask=flat_mask,
                     output=output,
                 )
+                output["perf/loss-metrics"] = timer()
 
             accel.backward(output["loss"] / grad_acc_steps)
+            output["perf/backward"] = timer()
 
             output["other/learning_rate"] = optimizer.param_groups[0]["lr"]
             output["other/batch_size"] = z.shape[0]
@@ -438,6 +440,7 @@ def train(
                 accel.update()
             else:
                 output["other/grad_norm"] = self._last_grad_norm
+            output["perf/step"] = timer()
 
             return {k: v for k, v in sorted(output.items())}
 
